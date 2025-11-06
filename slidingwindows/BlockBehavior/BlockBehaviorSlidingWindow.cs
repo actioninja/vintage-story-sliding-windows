@@ -292,14 +292,7 @@ namespace SlidingWindows.BlockBehaviors
         //     }
         // }
 
-        public Cuboidf[] MBGetCollisionBoxes(IBlockAccessor blockAccessor, BlockPos pos, Vec3i offset)
-        {
-            // Let the controller's normal GetCollisionBoxes handle collision.
-            // Fillers don't need their own collision boxes.
-            return Array.Empty<Cuboidf>();
-        }
-
-        public Cuboidf[] MBGetSelectionBoxes(IBlockAccessor blockAccessor, BlockPos pos, Vec3i offset)
+        private static Cuboidf[] GetMultiblockBoxes(IBlockAccessor blockAccessor, BlockPos pos, Vec3i offset)
         {
             // For multiblock callbacks, `pos` is the filler position.
             // The controller (with the BE) is at pos + offset.
@@ -313,19 +306,6 @@ namespace SlidingWindows.BlockBehaviors
                 return Array.Empty<Cuboidf>();
             }
 
-            // // If this *is* the controller (offset 0,0,0), just return the boxes as-is
-            // if (offset.X == 0 && offset.Y == 0 && offset.Z == 0)
-            // {
-            //     var copy = new Cuboidf[baseBoxes.Length];
-            //     for (int i = 0; i < baseBoxes.Length; i++)
-            //     {
-            //         copy[i] = baseBoxes[i].Clone();
-            //     }
-            //     return copy;
-            // }
-
-            // For filler parts, subtract the offset so that when the multiblock
-            // system adds it back, the world-space selection stays in the same place
             var adjusted = new Cuboidf[baseBoxes.Length];
             for (int i = 0; i < baseBoxes.Length; i++)
             {
@@ -337,6 +317,15 @@ namespace SlidingWindows.BlockBehaviors
             return adjusted;
         }
 
+        public Cuboidf[] MBGetCollisionBoxes(IBlockAccessor blockAccessor, BlockPos pos, Vec3i offset)
+        {
+            return GetMultiblockBoxes(blockAccessor, pos, offset);
+        }
+
+        public Cuboidf[] MBGetSelectionBoxes(IBlockAccessor blockAccessor, BlockPos pos, Vec3i offset)
+        {
+            return GetMultiblockBoxes(blockAccessor, pos, offset);
+        }
 
         public override Cuboidf[] GetCollisionBoxes(IBlockAccessor blockAccessor, BlockPos pos, ref EnumHandling handled)
         {

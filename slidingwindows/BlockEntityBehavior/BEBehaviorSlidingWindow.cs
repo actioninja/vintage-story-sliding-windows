@@ -114,6 +114,7 @@ namespace SlidingWindows.BlockEntityBehaviors
 
             // Open: stationary + moving in open position
             boxesOpened = new[] { stationary, movingOpen };
+Api.Logger.Notification($"[SlidingWindow] opened={opened} boxesClosed={boxesClosed[1].X1:F3}-{boxesClosed[1].X2:F3} boxesOpened={boxesOpened[1].X1:F3}-{boxesOpened[1].X2:F3}");
 
             // Rotate both sets according to facing, so they still line up with the mesh
             if (RotateYRad != 0)
@@ -131,6 +132,9 @@ namespace SlidingWindows.BlockEntityBehaviors
                     boxesOpened[i] = boxesOpened[i].RotatedCopy(0, degY, 0, origin);
                 }
             }
+
+            Api.Logger.Notification($"[SlidingWindow] opened={opened} boxesClosed={boxesClosed[1].X1:F3}-{boxesClosed[1].X2:F3} boxesOpened={boxesOpened[1].X1:F3}-{boxesOpened[1].X2:F3}");
+
         }
 
         public virtual void OnBlockPlaced(ItemStack byItemStack, IPlayer byPlayer, BlockSelection blockSel)
@@ -203,18 +207,19 @@ namespace SlidingWindows.BlockEntityBehaviors
             {
                 animUtil.StartAnimation(new AnimationMetaData() { Animation = "opened", Code = "opened", EaseInSpeed = easeInSpeed, EaseOutSpeed = easeOutSpeed });
             }
-            // Prob don't need to Rebuild hitboxes for new state
-            // UpdateHitBoxes();
+            // Rebuild hitboxes for new state
+            UpdateHitBoxes();
 
             // make mesh update with the new state
-            // if (Api?.Side == EnumAppSide.Client)
-            // {
-            //     UpdateMeshAndAnimations();
-            // }
+            if (Api?.Side == EnumAppSide.Client)
+            {
+                UpdateMeshAndAnimations();
+            }
 
-            // Push the change to client+server
+            // Push the change to client+server, and recache related blocks' selection/collision
             Api?.World?.BlockAccessor.MarkBlockDirty(Pos);
             Blockentity.MarkDirty();
+            Api?.World?.BlockAccessor.ExchangeBlock(Block.Id, Pos);
         }
 
         public override bool OnTesselation(ITerrainMeshPool mesher, ITesselatorAPI tessThreadTesselator)
