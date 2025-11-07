@@ -89,8 +89,6 @@ namespace SlidingWindows.BlockEntityBehaviors
             }
         }
 
-        #region Adjacency helpers (ported from vanilla door)
-
         public Vec3i getAdjacentOffset(int right, int back = 0, int up = 0)
         {
             return getAdjacentOffset(right, back, up, RotateYRad, invertHandles);
@@ -105,8 +103,6 @@ namespace SlidingWindows.BlockEntityBehaviors
                 right * (int)Math.Round(Math.Cos(rotateYRad + GameMath.PIHALF)) - back * (int)Math.Round(Math.Cos(rotateYRad))
             );
         }
-
-        #endregion
 
         internal void SetupMeshAndBoxes(bool initialSetup)
         {
@@ -373,44 +369,72 @@ namespace SlidingWindows.BlockEntityBehaviors
 
         #endregion
 
-        internal void ToggleWindowSashFromPartner(bool opened)
+        internal void ToggleWindowSashFromPartner(IPlayer byPlayer, bool opened)
         {
-            // Just do visuals + hitboxes, no sound. Mirrors vanilla "sync the other leaf".
-            this.opened = opened;
-            ToggleWindowSash(opened);
-            // Vanilla also updates neighbors; we stick to MarkBlockDirty in ToggleWindowSash.
+            // Same behavior as a normal toggle, but mark it as coming from a neighbor
+            ToggleWindowSashState(byPlayer, opened, true);
         }
 
-        public void ToggleWindowSashState(IPlayer byPlayer, bool opened)
+
+        public void ToggleWindowSashState(IPlayer byPlayer, bool opened, bool fromPartner = false)
         {
+            // If we're already in that state, bail
+            if (this.opened == opened && animUtil != null && animUtil.activeAnimationsByAnimCode.ContainsKey("opened") == opened) return;
+
             this.opened = opened;
-            ToggleWindowSash(opened);
+            ToggleWindowSash(opened);  // movement/animation only
 
-            // Sync state to paired neighbors (no extra sounds)
-            if (LeftWindow != null && invertHandles)
+            // Sync state to paired neighbors, but only from the "source" leaf so no recursion
+            if (!fromPartner)
             {
-                LeftWindow.ToggleWindowSashFromPartner(opened);
-            }
-            if (RightWindow != null)
-            {
-                RightWindow.ToggleWindowSashFromPartner(opened);
+                if (LeftWindow != null && invertHandles)
+                {
+                    LeftWindow.ToggleWindowSashState(byPlayer, opened, true);
+                }
+                if (RightWindow != null)
+                {
+                    RightWindow.ToggleWindowSashState(byPlayer, opened, true);
+                }
             }
 
+            // ---- Sounds (always per-leaf) ----
             float pitch = opened ? 0.8f : 0.7f;
-
             var sound = opened ? windowBh?.OpenSound : windowBh?.CloseSound;
 
-
-            // We use some extra sounds from "secondarySounds" attributes on top.
+            // Secondary sounds from attributes
             var customSoundKey = Block.Attributes?["secondarySounds"]?[opened ? "open" : "close"]?.AsString(null);
             if (customSoundKey != null)
             {
                 var customSound = new AssetLocation(customSoundKey);
                 float customSoundPitch = opened ? 0.8f : 1f;
-                Api.World.PlaySoundAt(customSound, Pos.X + 0.5f, Pos.InternalY + 0.5f, Pos.Z + 0.5f, byPlayer, EnumSoundType.Sound, customSoundPitch, 32f, 2f);
+
+                Api.World.PlaySoundAt(
+                    customSound,
+                    Pos.X + 0.5f,
+                    Pos.InternalY + 0.5f,
+                    Pos.Z + 0.5f,
+                    byPlayer,
+                    EnumSoundType.Sound,
+                    customSoundPitch,
+                    32f,
+                    2f
+                );
             }
 
-            Api.World.PlaySoundAt(sound, Pos.X + 0.5f, Pos.InternalY + 0.5f, Pos.Z + 0.5f, byPlayer, EnumSoundType.Sound, pitch, 32f, 1f);
+            if (sound != null)
+            {
+                Api.World.PlaySoundAt(
+                    sound,
+                    Pos.X + 0.5f,
+                    Pos.InternalY + 0.5f,
+                    Pos.Z + 0.5f,
+                    byPlayer,
+                    EnumSoundType.Sound,
+                    pitch,
+                    32f,
+                    1f
+                );
+            }
         }
 
         // Updates movement and hitboxes, but no sounds
