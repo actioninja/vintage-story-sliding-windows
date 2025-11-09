@@ -133,9 +133,13 @@ namespace SlidingWindows
                     ? EnumPrecipitationType.Snow
                     : EnumPrecipitationType.Rain;
             }
-            
+
             // if we wouldn't even call this rain, then exit
-            if (intensity < 0.05f || precType == EnumPrecipitationType.Snow) return false;
+            if (intensity < 0.1f || precType == EnumPrecipitationType.Snow) return false;
+
+            // bump up sprinkles so that we can still hear them
+            const float intensityFloor = 0.25f;
+            intensity = Math.Max(intensity, intensityFloor);
 
             return true;
         }
@@ -149,8 +153,7 @@ namespace SlidingWindows
                 EnumPrecipitationType.Rain => $"slidingwindows:sounds/weather/rain-on-glass-{variant}",
                 EnumPrecipitationType.Hail => $"slidingwindows:sounds/weather/hail-on-glass-{variant}",
                 _ => null
-            };
-
+            };            
             return soundKey != null;
         }
 
@@ -283,14 +286,14 @@ namespace SlidingWindows
         {
             // Volume scales with precipitation intensity (0–1 from vanilla system) and is affected
             // by how recently player moved into or out of the rain
-            return 0.15f * intensity * coverStrength * entryBias;
+            return 0.3f * intensity * coverStrength * entryBias;
         }
 
         float HowHardIsItRaining(
             float intensity, float coverStrength, float entryBias, int windowCount)
         {
             // Each game tick (400 ms) runs 2.5 times per second -- this desiredHits thing is still heavily scaled later
-            float desiredHitsPerSecond = 0.3f;         // at full intensity & full cover strength
+            float desiredHitsPerSecond = 0.5f;         // at full intensity & full cover strength
             float ticksPerSecond = 1000f / tickMs;     // 1000 / 400 = 2.5
 
             float baseHitChance = desiredHitsPerSecond * intensity / ticksPerSecond;
@@ -305,9 +308,9 @@ namespace SlidingWindows
 
             // normalize with a curve, not linearly, so that even a few windows still get sounds.
             // Assume 8 windows = 1.0 normal baseline, limits at 0.25x and 2x for extremes
-            // only 2 windows in range? 2x their hit chance. 32 or more? basically 1/4th the hit chance
+            // only 2 windows in range? 2.5x their hit chance. 32 or more? basically 1/4th the hit chance
 
-            float normalization = GameMath.Clamp((float)Math.Pow(8f / windowFactor, 1.3f), 0.25f, 2f);
+            float normalization = GameMath.Clamp((float)Math.Pow(8f / windowFactor, 1.3f), 0.25f, 2.5f);
             return baseHitChance * normalization * coverStrength * entryBias;
         }
 
@@ -322,10 +325,7 @@ namespace SlidingWindows
             float playerScale)
         {
             var rand = world.Rand;
-
-            // whether opened windows are more or less likely to register -- this nerfs closed windows
-            float chance = baseHitChance * (isOpen ? 1.3f : 1.0f);
-            if (rand.NextDouble() > chance) return;
+            if (rand.NextDouble() > baseHitChance) return;
 
             double sx = bpos.X + 0.5;
             double sy = bpos.Y + 1.0;  // play from top of the block
@@ -338,6 +338,7 @@ namespace SlidingWindows
             float pitch = opennessFactor + jitterPitch;
 
             float volume = baseVolume * opennessFactor * jitterVol;
+            volume = GameMath.Clamp(volume, 0f, 1.5f);
             volume *= playerScale;
 
             world.PlaySoundAt(
@@ -346,7 +347,7 @@ namespace SlidingWindows
                 null,
                 EnumSoundType.Ambient,
                 pitch,
-                16f,
+                24f,
                 volume
             );
         }
