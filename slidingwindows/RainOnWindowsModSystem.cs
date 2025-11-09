@@ -4,6 +4,7 @@ using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
+using Vintagestory.API.Common.Entities;
 using SlidingWindows.BlockEntityBehaviors;
 
 namespace SlidingWindows
@@ -41,13 +42,54 @@ namespace SlidingWindows
                 api.StoreModConfig(config, "RainOnWindowsConfig.json");
             }
         }
+        public struct PlayerAt
+        {
+            public IPlayer Player;
+            public EntityPos Pos;
+            public IBlockAccessor BlockAccessor;
+            public int Px;
+            public int Py;
+            public int Pz;
+            public int MinY;
+            public int MaxY;
+        }
+
+        bool WheresThePlayer(IPlayer player, IBlockAccessor ba, out PlayerAt here)
+        {
+            here = default;
+
+            if (player.Entity == null || ba == null)
+            {
+                return false;
+            }
+
+            var pos = player.Entity.Pos;
+
+            int px = (int)pos.X;
+            int py = (int)pos.Y;
+            int pz = (int)pos.Z;
+
+            here = new PlayerAt
+            {
+                Player = player,
+                Pos = pos,
+                BlockAccessor = ba,
+                Px = px,
+                Py = py,
+                Pz = pz,
+                MinY = py - 1,
+                MaxY = py + 3
+            };
+
+            return true;
+        }
 
         /// <summary>
         /// Query the new precipitation system at the players position.
         /// Uses both WeatherSystemBase.GetPrecipitation()
         /// and legacy weatherSys.BlendedWeatherData()
         /// </summary>
-        bool WhatsTheWeather(out EnumPrecipitationType precType, out float intensity)
+        bool WhatsTheWeatherAt(Vec3d pos, out EnumPrecipitationType precType, out float intensity)
         {
             precType = EnumPrecipitationType.Auto;
             intensity = 0f;
@@ -57,15 +99,12 @@ namespace SlidingWindows
                 return false;
             }
 
-            var player = capi.World.Player;
-            if (player == null || player.Entity == null) return false;
-
-            Vec3d pos = player.Entity.Pos.XYZ;
-
             // normalizes the game's private method getPrecipNoise() between 0-1
             intensity = GameMath.Clamp(weatherSys.GetPrecipitation(pos), 0f, 1f);
 
-            // 1) Prefer blended snapshot type if it’s set
+            // precType is sometimes "auto" even when its raining so...
+
+            // Prefer blended snapshot type if it’s set
             var snap = weatherSys.BlendedWeatherData;
             if (snap != null && snap.BlendedPrecType != EnumPrecipitationType.Auto)
             {
@@ -73,89 +112,62 @@ namespace SlidingWindows
             }
             else
             {
-                // 2) Ask the same slow-access helper the engine uses in WeatherSystemBase.GetPrecipitationState
+                // Ask the same slow-access helper the engine uses in WeatherSystemBase.GetPrecipitationState
                 if (weatherSys.WeatherDataSlowAccess != null)
                 {
                     precType = weatherSys.WeatherDataSlowAccess.GetPrecType(pos);
                 }
             }
 
-            // 3) Still Auto? Infer from live climate
+            // Still Auto? Infer from live climate
             if (precType == EnumPrecipitationType.Auto)
             {
                 BlockPos bpos = new BlockPos((int)pos.X, (int)pos.Y, (int)pos.Z);
+                // old way if VS grumbles about not being dimension aware:
+                // BlockPos bpos = new BlockPos(0);
+                // bpos.Set((int)pos.X, (int)pos.Y, (int)pos.Z);
+
                 var climate = capi.World.BlockAccessor.GetClimateAt(bpos, EnumGetClimateMode.NowValues);
 
                 precType = climate.Temperature <= 0f
                     ? EnumPrecipitationType.Snow
                     : EnumPrecipitationType.Rain;
             }
+            
+            // if we wouldn't even call this rain, then exit
+            if (intensity < 0.05f || precType == EnumPrecipitationType.Snow) return false;
+
             return true;
         }
 
-        string WhatsItSoundLike(EnumPrecipitationType type)
+        bool WhatsItSoundLike(EnumPrecipitationType type, out string soundKey)
         {
             int variant = capi.World.Rand.Next(1, 4);  // generates 1, 2, or 3
-            
-            switch (type)
+
+            soundKey = type switch
             {
-                case EnumPrecipitationType.Rain:
-                    return $"slidingwindows:sounds/weather/rain-on-glass-{variant}";
+                EnumPrecipitationType.Rain => $"slidingwindows:sounds/weather/rain-on-glass-{variant}",
+                EnumPrecipitationType.Hail => $"slidingwindows:sounds/weather/hail-on-glass-{variant}",
+                _ => null
+            };
 
-                case EnumPrecipitationType.Hail:
-                    return $"slidingwindows:sounds/weather/hail-on-glass-{variant}";
-
-                case EnumPrecipitationType.Snow:
-                case EnumPrecipitationType.Auto:
-                default:
-                    return null;
-            }
+            return soundKey != null;
         }
 
-
-        void OnGameTick(float dt)
+        bool AnyWindowsNearby(PlayerAt here, out List<(BlockPos pos, bool isOpen)> candidates)
         {
-            // Config might not be loaded for some weird reason; be defensive.
-            if (config == null || !config.EnableRainSoundsOnWindows) return;
-            
-            var world = capi.World;
+            candidates = new List<(BlockPos, bool)>();
+            var ba = here.BlockAccessor;
+            BlockPos thisWindowHere = new BlockPos(0);
 
-            if (!WhatsTheWeather(out var precType, out float intensity)) return;
-            
-            // is the weather interesting?
-            if (intensity < 0.05f || precType == EnumPrecipitationType.Snow) return;
-
-            var soundKey = WhatsItSoundLike(precType);
-            if (soundKey == null)
+            for (int x = here.Px - searchRadius; x <= here.Px + searchRadius; x++)
             {
-            capi.Logger.Debug("[RainOnGlass] soundKey is null for PrecType={0}", precType);
-                return;
-            }
-
-            var player = world.Player;
-            if (player == null || player.Entity == null) return;
-
-            var pos = player.Entity.Pos;
-            var ba = world.BlockAccessor;
-
-            int px = (int)pos.X;
-            int pz = (int)pos.Z;
-            int py = (int)pos.Y;
-            int minY = py - 1;
-            int maxY = py + 3;
-
-            // now , are there even any windows nearby
-
-            List<(BlockPos pos, bool isOpen)> candidates = new List<(BlockPos, bool)>();
-
-            for (int x = px - searchRadius; x <= px + searchRadius; x++)
-            {
-                for (int z = pz - searchRadius; z <= pz + searchRadius; z++)
+                for (int z = here.Pz - searchRadius; z <= here.Pz + searchRadius; z++)
                 {
-                    for (int y = minY; y <= maxY; y++)
+                    for (int y = here.MinY; y <= here.MaxY; y++)
                     {
-                        BlockPos bpos = new BlockPos(x, y, z);
-                        Block block = ba.GetBlock(bpos);
+                        thisWindowHere.Set(x, y, z); 
+                        Block block = ba.GetBlock(thisWindowHere);
 
                         if (block == null || block.Id == 0) continue;
 
@@ -173,7 +185,7 @@ namespace SlidingWindows
                         // windows and doors generally start closed
                         bool isOpen = false;
 
-                        var be = ba.GetBlockEntity(bpos);
+                        var be = ba.GetBlockEntity(thisWindowHere);
                         if (be != null)
                         {
                             // our sliding-window behavior or vanilla door behavior
@@ -182,25 +194,31 @@ namespace SlidingWindows
                                 be.GetBehavior<BEBehaviorDoor>()?.Opened ??
                                 false;
                         }
-                        candidates.Add((bpos, isOpen));
+                        candidates.Add((thisWindowHere.Copy(), isOpen));
                     }
                 }
             }
-            if (candidates.Count == 0) return;
+            return candidates.Count > 0;
+        }
 
-            // now determine whether to make it sound like rain
-            // so many scaling factors 
-
-            // player is probably inside, something above player head blocking rain
-            double eyeY = pos.Y + player.Entity.LocalEyePos.Y;
-            double rainY = ba.GetRainMapHeightAt(px, pz);
+        bool IsItRainingOverhead(
+            float currentCover,
+            PlayerAt here,
+            float dt,
+            out float newCover,
+            out float coverStrength,
+            out float entryBias)
+        {
+            var player = here.Player;
+            var ba = here.BlockAccessor;
+            // the player is probably inside if there's something above player head blocking rain
+            double eyeY = here.Pos.Y + player.Entity.LocalEyePos.Y;
+            double rainY = ba.GetRainMapHeightAt(here.Px, here.Pz);
             double depthBelowRain = rainY - eyeY;  // >0 means below the rain plane
 
-            // how deep to still hear the rain
+            // how deep to still hear the rain on the surface
             const double maxDepthBelowRainForSound = 8.0;
             bool underCover = depthBelowRain > 0.05 && depthBelowRain <= maxDepthBelowRainForSound;
-
-            // How hard is it raining?
 
             // increases or decreases hit chance when entering or leaving cover
             // by setting step size for counting up or down in the cooldown
@@ -209,6 +227,7 @@ namespace SlidingWindows
             const float fallSpeed = 4f;  // now please
             
             float safeDt = Math.Min(dt, 0.5f);  // cap at 0.5 seconds for sleeps/teleports
+            float coverFactor = currentCover;
 
             if (underCover)
             {
@@ -224,10 +243,16 @@ namespace SlidingWindows
                 coverFactor = GameMath.Clamp(coverFactor - fallSpeed * safeDt, -1f, 1f);
 
                 // stop calculating rain sounds, we're done here
-                if (coverFactor <= -0.99f) return;
+                if (coverFactor <= -0.99f)
+                {
+                    newCover = coverFactor;
+                    coverStrength = 1f;
+                    entryBias = 1f;
+                    return false;
+                }
             }
 
-            float coverStrength = Math.Abs(coverFactor);  // 0 → 1
+            coverStrength = Math.Abs(coverFactor);  // 0 → 1
 
             // 1 when player is newly come under cover (coverStrength near 0), moving towards
             // 0 when inside for a while (coverStrength near 1).
@@ -238,7 +263,7 @@ namespace SlidingWindows
             
             // Stronger initial boost but same "length":
             // 1.6x when we just came in, easing back to 1.0 quickly as coverStrength climbs.
-            float entryBias = 1f + entryAmount * 0.6f;          // 1.6 → 1.0
+            entryBias = 1f + entryAmount * 0.6f;          // 1.6 → 1.0
 
             // If player is outside (negative coverFactor) but still near enough windows for
             // this mod to do some math, fade out in case they're about to dip back in (a cooldown)
@@ -249,14 +274,25 @@ namespace SlidingWindows
                 entryBias *= exitBias;
             }
             // the above is sort of an alternative to a real debounce, in case player walks in and out rapidly
+            newCover = coverFactor;
+            return true;
+        }
 
+
+        float HowLoudIsTheRain(float intensity, float coverStrength, float entryBias)
+        {
             // Volume scales with precipitation intensity (0–1 from vanilla system) and is affected
             // by how recently player moved into or out of the rain
-            float baseVolume = 0.15f * intensity * coverStrength * entryBias;
+            return 0.15f * intensity * coverStrength * entryBias;
+        }
 
+        float HowHardIsItRaining(
+            float intensity, float coverStrength, float entryBias, int windowCount)
+        {
             // Each game tick (400 ms) runs 2.5 times per second -- this desiredHits thing is still heavily scaled later
             float desiredHitsPerSecond = 0.3f;         // at full intensity & full cover strength
             float ticksPerSecond = 1000f / tickMs;     // 1000 / 400 = 2.5
+
             float baseHitChance = desiredHitsPerSecond * intensity / ticksPerSecond;
 
             // ^^ This is the hit chance per second, per window, at full intensity & full cover,
@@ -265,48 +301,80 @@ namespace SlidingWindows
 
             // Normalize so that more nearby windows reduce the chance per window, still dependent on 
             // whether you just walked in or not
-            float windowFactor = Math.Max(1, candidates.Count);
+            float windowFactor = Math.Max(1, windowCount);
 
             // normalize with a curve, not linearly, so that even a few windows still get sounds.
             // Assume 8 windows = 1.0 normal baseline, limits at 0.25x and 2x for extremes
             // only 2 windows in range? 2x their hit chance. 32 or more? basically 1/4th the hit chance
 
             float normalization = GameMath.Clamp((float)Math.Pow(8f / windowFactor, 1.3f), 0.25f, 2f);
-            baseHitChance *= normalization * coverStrength * entryBias;
+            return baseHitChance * normalization * coverStrength * entryBias;
+        }
 
-            // which windows get rain sounds?
+
+        void IsItRainingOnThisWindow(
+            IClientWorldAccessor world,
+            string soundKey,
+            BlockPos bpos,
+            bool isOpen,
+            float baseVolume,
+            float baseHitChance,
+            float playerScale)
+        {
+            var rand = world.Rand;
+
+            // whether opened windows are more or less likely to register -- this nerfs closed windows
+            float chance = baseHitChance * (isOpen ? 1.3f : 1.0f);
+            if (rand.NextDouble() > chance) return;
+
+            double sx = bpos.X + 0.5;
+            double sy = bpos.Y + 1.0;  // play from top of the block
+            double sz = bpos.Z + 0.5;
+
+            // open windows sound louder and brighter
+            float opennessFactor = isOpen ? 1f : 0.9f;
+            float jitterVol = 0.8f + (float)rand.NextDouble() * 0.4f;
+            float jitterPitch = (float)(rand.NextDouble() * 0.1f - 0.05f);
+            float pitch = opennessFactor + jitterPitch;
+
+            float volume = baseVolume * opennessFactor * jitterVol;
+            volume *= playerScale;
+
+            world.PlaySoundAt(
+                new AssetLocation(soundKey),
+                sx, sy, sz,
+                null,
+                EnumSoundType.Ambient,
+                pitch,
+                16f,
+                volume
+            );
+        }
+
+        void OnGameTick(float dt)
+        {
+            // this might be a little too defensive but whatever
+            if (config == null || !config.EnableRainSoundsOnWindows) return;
+            
+            var world = capi.World;
+            if (world == null) return;
+
+            var player = world.Player;
+            if (player == null || player.Entity == null) return;
+            
+            var ba = world.BlockAccessor;
+            if (!WheresThePlayer(player, ba, out var here)) return;
+            if (!WhatsTheWeatherAt(here.Pos.XYZ, out var precType, out float intensity)) return;
+            if (!WhatsItSoundLike(precType, out var soundKey)) return;
+            if (!IsItRainingOverhead(coverFactor, here, dt,
+                out coverFactor, out var coverStrength, out var entryBias)) return;
+            if (!AnyWindowsNearby(here, out var candidates)) return;
+            float baseVolume = HowLoudIsTheRain(intensity, coverStrength, entryBias);
+            float baseHitChance = HowHardIsItRaining(intensity, coverStrength, entryBias, candidates.Count);
+            float playerScale = GameMath.Clamp(config.VolumeScale, 0f, 2f);
             foreach (var (bpos, isOpen) in candidates)
             {
-                // whether opened windows are more or less likely to register -- this nerfs closed windows
-                // because opening windows is loud
-                float chance = baseHitChance * (isOpen ? 1.3f : 1.0f);
-
-                if (capi.World.Rand.NextDouble() > chance) continue;
-
-                // location for sound to play at
-                double sx = bpos.X + 0.5;
-                double sy = bpos.Y + 0.0; // top of the block that was hit
-                double sz = bpos.Z + 0.5;
-
-                // opened windows sound louder and a little brighter, jitter the pitch/vol so its not a metronome
-                float opennessFactor = isOpen ? 1f : 0.9f;
-                float jitterVol = 0.8f + (float)capi.World.Rand.NextDouble() * 0.4f;
-                float jitterPitch = (float)(capi.World.Rand.NextDouble() * 0.1f - 0.05f);
-                float pitch = opennessFactor + jitterPitch;
-                float volume = baseVolume * opennessFactor * jitterVol;
-                float playerScale = GameMath.Clamp(config.VolumeScale, 0f, 2f);
-                // finally, apply player's volumee preference
-                volume *= playerScale;
-
-                world.PlaySoundAt(
-                    new AssetLocation(soundKey),
-                    sx, sy, sz,
-                    null,
-                    EnumSoundType.Ambient, // so players can adjust the volume in the related sound setting
-                    pitch,
-                    16f, // range at which to fall off ... maybe scale this? check after testing w/ multiplayer
-                    volume
-                );
+                IsItRainingOnThisWindow(world, soundKey, bpos, isOpen, baseVolume, baseHitChance, playerScale);
             }
 
         }
